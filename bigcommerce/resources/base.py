@@ -24,7 +24,10 @@ class Mapping(dict):
         """
         Display as a normal dict, but filter out underscored items first
         """
-        return str({k: self.__dict__[k] for k in self.__dict__ if not k.startswith("_")})
+        return str({k: self.__dict__[k] for k in self.__dict__ if not k.startswith("_") and k.startswith('connection')})
+
+    def __json__(self):
+        return {k: self.__dict__[k] for k in self.__dict__ if not k.startswith("_") and not k.startswith('connection')}
 
     def __repr__(self):
         return "<%s at %s, %s>" % (type(self).__name__, hex(id(self)), str(self))
@@ -32,6 +35,7 @@ class Mapping(dict):
 
 class ApiResource(Mapping):
     resource_name = ""  # The identifier which describes this resource in urls
+    resource_version = "v2"
 
     @classmethod
     def _create_object(cls, response, connection=None):
@@ -42,33 +46,67 @@ class ApiResource(Mapping):
 
     @classmethod
     def _make_request(cls, method, url, connection, data=None, params=None, headers=None):
-        return connection.make_request(method, url, data, params, headers)
+        return connection.make_request(method, url, data, params, headers, version=cls.resource_version)
 
     @classmethod
     def _get_path(cls, id):
-        return "%s/%s" % (cls.resource_name, id)
+        if id:
+            return "%s/%s" % (cls.resource_name, id)
+        else:
+            return "%s" % (cls.resource_name)
 
     @classmethod
-    def get(cls, id, connection=None, **params):
+    def get(cls, id=None, connection=None, **params):
         response = cls._make_request('GET', cls._get_path(id), connection, params=params)
         return cls._create_object(response, connection=connection)
 
 
 class ApiSubResource(ApiResource):
+    gparent_resource = ""
     parent_resource = ""
+    gparent_key = ""
     parent_key = ""
 
     @classmethod
-    def _get_path(cls, id, parentid):
-        return "%s/%s/%s/%s" % (cls.parent_resource, parentid, cls.resource_name, id)
+    def _get_path(cls, parentid, id=None):
+        if id:
+            return "%s/%s/%s/%s" % (cls.parent_resource, parentid, cls.resource_name, id)
+        return "%s/%s/%s" % (cls.parent_resource, parentid, cls.resource_name)
 
     @classmethod
-    def get(cls, parentid, id, connection=None, **params):
-        response = cls._make_request('GET', cls._get_path(id, parentid), connection, params=params)
+    def get(cls, parentid, id=None, connection=None, **params):
+        response = cls._make_request('GET', cls._get_path(parentid, id), connection, params=params)
         return cls._create_object(response, connection=connection)
 
     def parent_id(self):
         return self[self.parent_key]
+
+    def gparent_id(self):
+        return self[self.gparent_key]
+
+
+class ApiSubSubResource(ApiSubResource):
+    gparent_resource = ""
+    parent_resource = ""
+    gparent_key = ""
+    parent_key = ""
+
+    @classmethod
+    def _get_path(cls, gparentid, parentid, id=None):
+        if id:
+            return "%s/%s/%s/%s/%s/%s" % (cls.gparent_resource, gparentid, cls.parent_resource, parentid, cls.resource_name, id)
+        return "%s/%s/%s/%s/%s" % (cls.gparent_resource, gparentid, cls.parent_resource, parentid, cls.resource_name)
+
+    @classmethod
+    def get(cls, gparentid, parentid, id=None, connection=None, **params):
+        response = cls._make_request('GET', cls._get_path(gparentid, parentid, id), connection, params=params)
+        return cls._create_object(response, connection=connection)
+
+    def parent_id(self):
+        return self[self.parent_key]
+
+    def gparent_id(self):
+        return self[self.gparent_key]    
 
 
 class CreateableApiResource(ApiResource):
@@ -93,6 +131,17 @@ class CreateableApiSubResource(ApiSubResource):
         return cls._create_object(response, connection=connection)
 
 
+class CreateableApiSubSubResource(ApiSubSubResource):
+    @classmethod
+    def _create_path(cls, gparentid, parentid):
+        return "%s/%s/%s/%s/%s" % (cls.gparent_resource, gparentid, cls.parent_resource, parentid, cls.resource_name)
+
+    @classmethod
+    def create(cls, gparentid, parentid, connection=None, **params):
+        response = cls._make_request('POST', cls._create_path(gparentid, parentid), connection, data=params)
+        return cls._create_object(response, connection=connection)
+
+
 class ListableApiResource(ApiResource):
     @classmethod
     def _get_all_path(cls):
@@ -103,7 +152,6 @@ class ListableApiResource(ApiResource):
         """
             Returns first page if no params passed in as a list.
         """
-
         request = cls._make_request('GET', cls._get_all_path(), connection, params=params)
         return cls._create_object(request, connection=connection)
 
@@ -150,7 +198,7 @@ class ListableApiResource(ApiResource):
 
 class ListableApiSubResource(ApiSubResource):
     @classmethod
-    def _get_all_path(cls, parentid=None):
+    def _get_all_path(cls, parentid):
         # Not all sub resources require a parent id.  Eg: /api/v2/products/skus?sku=<value>
         if (parentid):
             return "%s/%s/%s" % (cls.parent_resource, parentid, cls.resource_name)
@@ -163,6 +211,18 @@ class ListableApiSubResource(ApiSubResource):
         return cls._create_object(response, connection=connection)
 
 
+class ListableApiSubSubResource(ApiSubSubResource):
+    @classmethod
+    def _get_all_path(cls, gparentid, parentid):
+        # Not all sub resources require a parent id.  Eg: /api/v2/products/skus?sku=<value>
+        return "%s/%s/%s/%s/%s" % (cls.gparent_resource, gparentid, cls.parent_resource, parentid, cls.resource_name)
+
+    @classmethod
+    def all(cls, gparentid, parentid, connection=None, **params):
+        response = cls._make_request('GET', cls._get_all_path(parentid, gparentid), connection, params=params)
+        return cls._create_object(response, connection=connection)
+
+
 class UpdateableApiResource(ApiResource):
     def _update_path(self):
         return "%s/%s" % (self.resource_name, self.id)
@@ -171,6 +231,27 @@ class UpdateableApiResource(ApiResource):
         response = self._make_request('PUT', self._update_path(), self._connection, data=updates)
         return self._create_object(response, connection=self._connection)
 
+class CollectionUpdateableApiResource(ApiResource):
+    @classmethod
+    def _update_path(cls):
+        return cls.resource_name
+    @classmethod
+    def update(cls, updates, connection=None):
+        response = cls._make_request('PUT', cls._update_path(), connection, updates)
+        return cls._create_object(response, connection=connection)
+
+class CollectionCreatableApiSubResource(ApiResource):
+    @classmethod
+    def _create_path(cls, parentid):
+        return "%s/%s/%s" % (cls.parent_resource, parentid, cls.resource_name)
+
+    @classmethod
+    def create(cls, parentid, data, connection=None):
+        response = cls._make_request('POST', cls._create_path(parentid), connection, data)
+        return cls._create_object(response, connection=connection)
+
+
+# TODO: Add Upsertable?
 
 class UpdateableApiSubResource(ApiSubResource):
     def _update_path(self):
@@ -181,8 +262,19 @@ class UpdateableApiSubResource(ApiSubResource):
         return self._create_object(response, connection=self._connection)
 
 
+class UpdateableApiSubSubResource(ApiSubResource):
+    def _update_path(self):
+        return "%s/%s/%s/%s/%s/%s" % (self.gparent_resource, self.gparent_id(), self.parent_resource, self.parent_id(), self.resource_name, self.id)
+
+    def update(self, **updates):
+        response = self._make_request('PUT', self._update_path(), self._connection, data=updates)
+        return self._create_object(response, connection=self._connection)
+
+
 class DeleteableApiResource(ApiResource):
     def _delete_path(self):
+        if 'id' not in self and 'uuid' in self: # widgets have uuid not id
+            return "%s/%s" % (self.resource_name, self.uuid)
         return "%s/%s" % (self.resource_name, self.id)
 
     def delete(self):
@@ -192,6 +284,14 @@ class DeleteableApiResource(ApiResource):
 class DeleteableApiSubResource(ApiSubResource):
     def _delete_path(self):
         return "%s/%s/%s/%s" % (self.parent_resource, self.parent_id(), self.resource_name, self.id)
+
+    def delete(self):
+        return self._make_request('DELETE', self._delete_path(), self._connection)
+
+
+class DeleteableApiSubSubResource(ApiSubSubResource):
+    def _delete_path(self):
+        return "%s/%s/%s/%s/%s/%s" % (self.gparent_resource, self.gparent_id(), self.parent_resource, self.parent_id(), self.resource_name, self.id)
 
     def delete(self):
         return self._make_request('DELETE', self._delete_path(), self._connection)
@@ -215,7 +315,6 @@ class CollectionDeleteableApiSubResource(ApiSubResource):
     @classmethod
     def delete_all(cls, parentid, connection=None):
         return cls._make_request('DELETE', cls._delete_all_path(parentid), connection)
-
 
 class CountableApiResource(ApiResource):
     @classmethod
