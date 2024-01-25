@@ -1,19 +1,20 @@
 import os
 import sys
 from bigcommerce import connection
-from bigcommerce.resources import *  # Needed for ApiResourceWrapper dynamic loading
-
+from bigcommerce.resources.v2 import * # Needed for ApiResourceWrapper dynamic loading
+from bigcommerce.resources import v3 # Needed for ApiResourceWrapper dynamic loading
 
 class BigcommerceApi(object):
     def __init__(self, host=None, basic_auth=None,
-                 client_id=None, store_hash=None, access_token=None, rate_limiting_management=None):
+                 client_id=None, store_hash=None, access_token=None, rate_limiting_management=None, version='v2'):
         self.api_service = os.getenv('BC_API_ENDPOINT', 'api.bigcommerce.com')
         self.auth_service = os.getenv('BC_AUTH_SERVICE', 'login.bigcommerce.com')
+        self.version = version
 
         if host and basic_auth:
             self.connection = connection.Connection(host, basic_auth)
-        elif client_id and store_hash:
-            self.connection = connection.OAuthConnection(client_id, store_hash, access_token, self.api_service,
+        elif (client_id or access_token) and store_hash:
+            self.connection = connection.OAuthConnection(client_id=client_id, store_hash=store_hash, access_token=access_token, host=self.api_service,
                                                          rate_limiting_management=rate_limiting_management)
         else:
             raise Exception("Must provide either (client_id and store_hash) or (host and basic_auth)")
@@ -32,8 +33,11 @@ class BigcommerceApi(object):
         return connection.OAuthConnection.verify_payload_jwt(signed_payload, client_secret, client_id)
 
     def __getattr__(self, item):
+        if self.version == 'v3':
+            return V3ApiResourceWrapper(item, self)
+        if self.version == 'latest':
+            return TryLatestApiResourceWrapper(item, self)
         return ApiResourceWrapper(item, self)
-
 
 class ApiResourceWrapper(object):
     """
@@ -71,3 +75,30 @@ class ApiResourceWrapper(object):
         Assumes that the class is already loaded.
         """
         return getattr(sys.modules[__name__], str)
+
+class BigCommerceLatestApi(BigcommerceApi):
+    def __getattr__(self, item):
+        return TryLatestApiResourceWrapper(item, self)
+
+
+class V3ApiResourceWrapper(ApiResourceWrapper):
+    @classmethod
+    def str_to_class(cls, str):
+        """
+        Transforms a string class name into a class object
+        Assumes that the class is already loaded.
+        """
+        return getattr(getattr(sys.modules[__name__], 'v3'), str)
+
+
+class TryLatestApiResourceWrapper(ApiResourceWrapper):
+    @classmethod
+    def str_to_class(cls, str):
+        """
+        Transforms a string class name into a class object
+        Assumes that the class is already loaded.
+        """
+        try:
+            return getattr(getattr(sys.modules[__name__], 'v3'), str)
+        except AttributeError:
+            return getattr(sys.modules[__name__], str)
